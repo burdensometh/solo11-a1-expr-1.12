@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1271,6 +1272,226 @@ func TestConstExpr_error_no_env(t *testing.T) {
 			expr.ConstExpr("divide"),
 		)
 	})
+}
+
+func TestExpr_mutable_constants_copied_between_runs(t *testing.T) {
+	t.Run("folded array", func(t *testing.T) {
+		program, err := expr.Compile(`[1, 2, 3]`)
+		require.NoError(t, err)
+
+		out, err := expr.Run(program, nil)
+		require.NoError(t, err)
+		require.Equal(t, []interface{}{1, 2, 3}, out)
+
+		out.([]interface{})[0] = 42
+
+		out, err = expr.Run(program, nil)
+		require.NoError(t, err)
+		require.Equal(t, []interface{}{1, 2, 3}, out)
+	})
+
+	t.Run("const range", func(t *testing.T) {
+		program, err := expr.Compile(`1..3`)
+		require.NoError(t, err)
+
+		out, err := expr.Run(program, nil)
+		require.NoError(t, err)
+		require.Equal(t, []int{1, 2, 3}, out)
+
+		out.([]int)[0] = 42
+
+		out, err = expr.Run(program, nil)
+		require.NoError(t, err)
+		require.Equal(t, []int{1, 2, 3}, out)
+	})
+
+	t.Run("const expr map", func(t *testing.T) {
+		env := map[string]interface{}{
+			"newMap": func() map[string]interface{} {
+				return map[string]interface{}{"a": 1}
+			},
+		}
+		program, err := expr.Compile(`newMap()`, expr.Env(env), expr.ConstExpr("newMap"))
+		require.NoError(t, err)
+
+		out, err := expr.Run(program, env)
+		require.NoError(t, err)
+		require.Equal(t, map[string]interface{}{"a": 1}, out)
+
+		out.(map[string]interface{})["a"] = 42
+
+		out, err = expr.Run(program, env)
+		require.NoError(t, err)
+		require.Equal(t, map[string]interface{}{"a": 1}, out)
+	})
+
+	t.Run("const expr shared substructure", func(t *testing.T) {
+		env := map[string]interface{}{
+			"newPair": func() map[string]interface{} {
+				shared := []int{1, 2, 3}
+				return map[string]interface{}{"a": shared, "b": shared}
+			},
+		}
+		program, err := expr.Compile(`newPair()`, expr.Env(env), expr.ConstExpr("newPair"))
+		require.NoError(t, err)
+
+		out, err := expr.Run(program, env)
+		require.NoError(t, err)
+		pair := out.(map[string]interface{})
+
+		// Shared substructure of the constant must be shared in the copy.
+		pair["a"].([]int)[0] = 42
+		require.Equal(t, 42, pair["b"].([]int)[0])
+
+		// But the constant itself must stay intact.
+		out, err = expr.Run(program, env)
+		require.NoError(t, err)
+		pair = out.(map[string]interface{})
+		require.Equal(t, []int{1, 2, 3}, pair["a"].([]int))
+		require.Equal(t, []int{1, 2, 3}, pair["b"].([]int))
+	})
+
+	t.Run("const expr cyclic value", func(t *testing.T) {
+		env := map[string]interface{}{
+			"newCycle": func() map[string]interface{} {
+				m := map[string]interface{}{}
+				m["self"] = m
+				return m
+			},
+		}
+		program, err := expr.Compile(`newCycle()`, expr.Env(env), expr.ConstExpr("newCycle"))
+		require.NoError(t, err)
+
+		out, err := expr.Run(program, env)
+		require.NoError(t, err)
+		cycle := out.(map[string]interface{})
+		self, ok := cycle["self"].(map[string]interface{})
+		require.True(t, ok)
+
+		// The cycle in the copy must point to the copy itself.
+		self["a"] = 1
+		require.Equal(t, 1, cycle["a"])
+
+		out, err = expr.Run(program, env)
+		require.NoError(t, err)
+		require.NotContains(t, out.(map[string]interface{}), "a")
+	})
+
+	t.Run("same constant within one run", func(t *testing.T) {
+		var taps [][]map[string]interface{}
+		env := map[string]interface{}{
+			"newMap": func() map[string]interface{} {
+				return map[string]interface{}{"a": 1}
+			},
+			"tap": func(m map[string]interface{}) bool {
+				taps[len(taps)-1] = append(taps[len(taps)-1], m)
+				return true
+			},
+		}
+		program, err := expr.Compile(
+			`all([1, 2, 3], tap(newMap())) and all([1, 2, 3], tap(newMap()))`,
+			expr.Env(env),
+			expr.ConstExpr("newMap"),
+		)
+		require.NoError(t, err)
+
+		run := func() {
+			taps = append(taps, []map[string]interface{}{})
+			_, err = expr.Run(program, env)
+			require.NoError(t, err)
+		}
+		ptr := func(m map[string]interface{}) uintptr {
+			return reflect.ValueOf(m).Pointer()
+		}
+
+		run()
+		require.Len(t, taps[0], 6)
+
+		// All references to the same constant within a single run
+		// must see the same copy.
+		require.Equal(t, ptr(taps[0][0]), ptr(taps[0][1]))
+		require.Equal(t, ptr(taps[0][0]), ptr(taps[0][2]))
+		require.Equal(t, ptr(taps[0][3]), ptr(taps[0][4]))
+		require.Equal(t, ptr(taps[0][3]), ptr(taps[0][5]))
+
+		taps[0][0]["b"] = 2
+		require.Equal(t, 2, taps[0][1]["b"])
+
+		// The next run must get fresh copies.
+		run()
+		require.Len(t, taps[1], 6)
+		require.NotEqual(t, ptr(taps[0][0]), ptr(taps[1][0]))
+		require.NotContains(t, taps[1][0], "b")
+	})
+
+	t.Run("const expr pointer", func(t *testing.T) {
+		type point struct{ X, Y int }
+		env := map[string]interface{}{
+			"newPoint": func() *point { return &point{X: 1, Y: 2} },
+		}
+		program, err := expr.Compile(`newPoint()`, expr.Env(env), expr.ConstExpr("newPoint"))
+		require.NoError(t, err)
+
+		out, err := expr.Run(program, env)
+		require.NoError(t, err)
+		require.Equal(t, &point{X: 1, Y: 2}, out)
+
+		out.(*point).X = 42
+
+		out, err = expr.Run(program, env)
+		require.NoError(t, err)
+		require.Equal(t, &point{X: 1, Y: 2}, out)
+	})
+
+	t.Run("concurrent runs", func(t *testing.T) {
+		program, err := expr.Compile(`[1, 2, 3]`)
+		require.NoError(t, err)
+
+		var wg sync.WaitGroup
+		for g := 0; g < 8; g++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := 0; i < 100; i++ {
+					out, err := expr.Run(program, nil)
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					out.([]interface{})[0] = 42
+				}
+			}()
+		}
+		wg.Wait()
+
+		out, err := expr.Run(program, nil)
+		require.NoError(t, err)
+		require.Equal(t, []interface{}{1, 2, 3}, out)
+	})
+
+	t.Run("in array optimization still works", func(t *testing.T) {
+		program, err := expr.Compile(`2 in [1, 2, 3]`)
+		require.NoError(t, err)
+
+		out, err := expr.Run(program, nil)
+		require.NoError(t, err)
+		require.Equal(t, true, out)
+	})
+}
+
+func TestConstExpr_error_uncopyable_type(t *testing.T) {
+	env := map[string]interface{}{
+		"newChan": func() chan int { return make(chan int) },
+		"newFunc": func() func() { return func() {} },
+	}
+
+	_, err := expr.Compile(`newChan()`, expr.Env(env), expr.ConstExpr("newChan"))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cannot copy value of type chan int")
+
+	_, err = expr.Compile(`newFunc()`, expr.Env(env), expr.ConstExpr("newFunc"))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cannot copy value of type func()")
 }
 
 var stringer = reflect.TypeOf((*fmt.Stringer)(nil)).Elem()

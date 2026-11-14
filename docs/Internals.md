@@ -76,3 +76,17 @@ fib(42)
 Will be replaced with the result of `fib`(42)` on the compile step.
 
 [ConstExpr Example](https://pkg.go.dev/github.com/antonmedv/expr?tab=doc#ConstExpr)
+
+## Constant snapshots
+
+Collection constants produced by constant folding, const range and const
+expr are stored in the compiled program. As a caller may mutate the value
+returned by a program run, Expr makes a copy of such constants on every
+run. The copy is made lazily: only constants actually accessed during a
+run are copied, and all references to the same constant within a single
+run share the same copy. The copy preserves types, shared substructure
+and cycles of the original value.
+
+Constants which cannot be safely copied (values containing channels,
+functions, unsafe pointers, or unexported struct fields with mutable
+data) are rejected on the compile step.

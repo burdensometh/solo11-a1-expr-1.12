@@ -6,6 +6,7 @@ const (
 	OpInvalid Opcode = iota
 	OpPush
 	OpPushInt
+	OpPushCopy
 	OpPop
 	OpLoadConst
 	OpLoadField

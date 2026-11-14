@@ -36,6 +36,7 @@ type VM struct {
 	curr         chan int
 	memory       int
 	memoryBudget int
+	constants    map[int]interface{}
 }
 
 type Scope struct {
@@ -81,6 +82,7 @@ func (vm *VM) Run(program *Program, env interface{}) (_ interface{}, err error) 
 	vm.memoryBudget = MemoryBudget
 	vm.memory = 0
 	vm.ip = 0
+	vm.constants = nil
 
 	for vm.ip < len(program.Bytecode) {
 		if vm.debug {
@@ -98,6 +100,23 @@ func (vm *VM) Run(program *Program, env interface{}) (_ interface{}, err error) 
 
 		case OpPush:
 			vm.push(program.Constants[arg])
+
+		case OpPushCopy:
+			// Mutable constants (folded arrays, maps, const expr results,
+			// etc.) are copied on first access, so a caller mutating the
+			// returned value cannot pollute subsequent runs. Copies are
+			// memoized for the duration of a single run: all references to
+			// the same constant within one run share the same copy.
+			if vm.constants == nil {
+				vm.constants = make(map[int]interface{})
+			}
+			if c, ok := vm.constants[arg]; ok {
+				vm.push(c)
+			} else {
+				c := runtime.Copy(program.Constants[arg])
+				vm.constants[arg] = c
+				vm.push(c)
+			}
 
 		case OpPop:
 			vm.pop()

@@ -284,6 +284,17 @@ func (c *compiler) StringNode(node *ast.StringNode) {
 }
 
 func (c *compiler) ConstantNode(node *ast.ConstantNode) {
+	if runtime.NeedsCopy(reflect.TypeOf(node.Value)) {
+		// Mutable constants (arrays, maps, etc.) are copied on every
+		// program run, so a caller cannot mutate the constant stored in
+		// the compiled program. Values which cannot be safely copied are
+		// rejected here, on the compile step.
+		if err := runtime.Copyable(node.Value); err != nil {
+			panic(err)
+		}
+		c.emit(OpPushCopy, c.addConstant(node.Value))
+		return
+	}
 	c.emitPush(node.Value)
 }
 
@@ -395,7 +406,13 @@ func (c *compiler) BinaryNode(node *ast.BinaryNode) {
 
 	case "in":
 		c.compile(node.Left)
-		c.compile(node.Right)
+		if constant, ok := node.Right.(*ast.ConstantNode); ok {
+			// The constant is consumed by OpIn and never escapes the
+			// program, so it can be shared between runs as is.
+			c.emitPush(constant.Value)
+		} else {
+			c.compile(node.Right)
+		}
 		c.emit(OpIn)
 
 	case "matches":

@@ -392,3 +392,73 @@ func TestRun_OpInvalid(t *testing.T) {
 	_, err := vm.Run(program, nil)
 	require.EqualError(t, err, "invalid opcode")
 }
+
+func TestRun_OpPushCopy(t *testing.T) {
+	program := &vm.Program{
+		Constants: []interface{}{
+			[]interface{}{1, 2, 3},
+		},
+		Bytecode:  []vm.Opcode{vm.OpPushCopy},
+		Arguments: []int{0},
+	}
+
+	out, err := vm.Run(program, nil)
+	require.NoError(t, err)
+	require.Equal(t, []interface{}{1, 2, 3}, out)
+
+	// Mutating the returned value must not pollute the constant.
+	out.([]interface{})[0] = 42
+
+	out, err = vm.Run(program, nil)
+	require.NoError(t, err)
+	require.Equal(t, []interface{}{1, 2, 3}, out)
+}
+
+func TestRun_OpPushCopy_same_run(t *testing.T) {
+	program := &vm.Program{
+		Constants: []interface{}{
+			map[string]interface{}{"a": 1},
+		},
+		Bytecode:  []vm.Opcode{vm.OpPushCopy, vm.OpPushCopy},
+		Arguments: []int{0, 0},
+	}
+
+	v := &vm.VM{}
+	out, err := v.Run(program, nil)
+	require.NoError(t, err)
+
+	// Both pushes of the same constant within a single run must
+	// return the same copy: one is left on the stack, the other
+	// is returned as a result.
+	require.Len(t, v.Stack(), 1)
+	first := v.Stack()[0].(map[string]interface{})
+	second := out.(map[string]interface{})
+	first["b"] = 2
+	require.Equal(t, 2, second["b"])
+
+	// The next run gets a fresh copy.
+	out, err = v.Run(program, nil)
+	require.NoError(t, err)
+	require.NotContains(t, out.(map[string]interface{}), "b")
+}
+
+func TestRun_OpPushCopy_only_accessed_constants(t *testing.T) {
+	program := &vm.Program{
+		Constants: []interface{}{
+			[]interface{}{1},
+			[]interface{}{2},
+		},
+		// Push the first constant twice; the second one is never accessed.
+		Bytecode:  []vm.Opcode{vm.OpPushCopy, vm.OpPushCopy},
+		Arguments: []int{0, 0},
+	}
+
+	v := &vm.VM{}
+	out, err := v.Run(program, nil)
+	require.NoError(t, err)
+
+	// Only one copy of the first constant should be made per run.
+	first := reflect.ValueOf(v.Stack()[0]).Pointer()
+	second := reflect.ValueOf(out).Pointer()
+	require.Equal(t, first, second)
+}

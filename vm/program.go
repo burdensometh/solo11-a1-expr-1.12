@@ -82,6 +82,9 @@ func (program *Program) Disassemble() string {
 		case OpPushInt:
 			argument("OpPushInt")
 
+		case OpPushCopy:
+			constant("OpPushCopy")
+
 		case OpPop:
 			code("OpPop")
 

@@ -258,3 +258,31 @@ func TestCompile(t *testing.T) {
 		assert.Equal(t, test.program.Disassemble(), program.Disassemble(), test.input)
 	}
 }
+
+func TestCompile_constant_copy(t *testing.T) {
+	t.Run("mutable constant", func(t *testing.T) {
+		program, err := expr.Compile(`[1, 2, 3]`)
+		require.NoError(t, err)
+		require.Contains(t, program.Disassemble(), "OpPushCopy")
+	})
+
+	t.Run("immutable constant", func(t *testing.T) {
+		program, err := expr.Compile(`42`)
+		require.NoError(t, err)
+		require.NotContains(t, program.Disassemble(), "OpPushCopy")
+	})
+
+	t.Run("in array optimization", func(t *testing.T) {
+		// The map created by the "in array" optimization is consumed by
+		// OpIn and never escapes the program, so it should not be copied.
+		program, err := expr.Compile(`1 in [1, 2, 3]`)
+		require.NoError(t, err)
+		require.NotContains(t, program.Disassemble(), "OpPushCopy")
+	})
+
+	t.Run("const range", func(t *testing.T) {
+		program, err := expr.Compile(`1..3`)
+		require.NoError(t, err)
+		require.Contains(t, program.Disassemble(), "OpPushCopy")
+	})
+}
