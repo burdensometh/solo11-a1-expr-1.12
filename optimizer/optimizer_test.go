@@ -9,6 +9,7 @@ import (
 	"github.com/antonmedv/expr/conf"
 	"github.com/antonmedv/expr/optimizer"
 	"github.com/antonmedv/expr/parser"
+	"github.com/antonmedv/expr/vm/runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -80,24 +81,13 @@ func TestOptimize_in_range(t *testing.T) {
 	err = optimizer.Optimize(&tree.Node, nil)
 	require.NoError(t, err)
 
-	left := &ast.IdentifierNode{
-		Value: "age",
-	}
 	expected := &ast.BinaryNode{
-		Operator: "and",
-		Left: &ast.BinaryNode{
-			Operator: ">=",
-			Left:     left,
-			Right: &ast.IntegerNode{
-				Value: 18,
-			},
+		Operator: "in",
+		Left: &ast.IdentifierNode{
+			Value: "age",
 		},
-		Right: &ast.BinaryNode{
-			Operator: "<=",
-			Left:     left,
-			Right: &ast.IntegerNode{
-				Value: 31,
-			},
+		Right: &ast.ConstantNode{
+			Value: runtime.Range{Min: 18, Max: 31},
 		},
 	}
 
@@ -113,6 +103,61 @@ func TestOptimize_const_range(t *testing.T) {
 
 	expected := &ast.ConstantNode{
 		Value: []int{-1, 0, 1},
+	}
+
+	assert.Equal(t, ast.Dump(expected), ast.Dump(tree.Node))
+}
+
+func TestOptimize_const_range_empty(t *testing.T) {
+	tree, err := parser.Parse(`1..-1`)
+	require.NoError(t, err)
+
+	err = optimizer.Optimize(&tree.Node, nil)
+	require.NoError(t, err)
+
+	expected := &ast.ConstantNode{
+		Value: []int{},
+	}
+
+	assert.Equal(t, ast.Dump(expected), ast.Dump(tree.Node))
+}
+
+func TestOptimize_const_range_overflow(t *testing.T) {
+	// The size of the range overflows int64. The range should not be
+	// patched with a constant (in particular not with an empty slice),
+	// so the memory budget detection happens on runtime.
+	tree, err := parser.Parse(`(-9223372036854775807 - 1)..9223372036854775807`)
+	require.NoError(t, err)
+
+	err = optimizer.Optimize(&tree.Node, nil)
+	require.NoError(t, err)
+
+	expected := &ast.BinaryNode{
+		Operator: "..",
+		Left:     &ast.IntegerNode{Value: -9223372036854775807 - 1},
+		Right:    &ast.IntegerNode{Value: 9223372036854775807},
+	}
+
+	assert.Equal(t, ast.Dump(expected), ast.Dump(tree.Node))
+}
+
+func TestOptimize_in_range_reversed(t *testing.T) {
+	// An empty reversed range is preserved as is: the membership check
+	// of any value in an empty range is false.
+	tree, err := parser.Parse(`age in 31..18`)
+	require.NoError(t, err)
+
+	err = optimizer.Optimize(&tree.Node, nil)
+	require.NoError(t, err)
+
+	expected := &ast.BinaryNode{
+		Operator: "in",
+		Left: &ast.IdentifierNode{
+			Value: "age",
+		},
+		Right: &ast.ConstantNode{
+			Value: runtime.Range{Min: 31, Max: 18},
+		},
 	}
 
 	assert.Equal(t, ast.Dump(expected), ast.Dump(tree.Node))

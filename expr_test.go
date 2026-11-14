@@ -1069,6 +1069,124 @@ func TestExpr(t *testing.T) {
 	}
 }
 
+func TestExpr_in_range(t *testing.T) {
+	env := map[string]interface{}{
+		"age": 20,
+		"f":   func() int { return 2 },
+	}
+	tests := []struct {
+		code string
+		want interface{}
+	}{
+		{`age in 18..31`, true},
+		{`age in 0..18`, false},
+		{`2 in 1..3`, true},
+		{`0 in -1..1 and 1 in 1..1`, true},
+		{`-2 in -5..-1`, true},
+		{`-6 in -5..-1`, false},
+		{`4 in 5..1`, false}, // empty reversed range
+		{`5 in 5..1`, false}, // empty reversed range
+		{`1.5 in 1..3`, false},
+		{`2.5 in 1..3`, false},
+		{`2.0 in 1..3`, true},
+		{`"a" in 1..3`, false},
+		{`"2" in 1..3`, false},
+		{`true in 1..3`, false},
+		{`nil in 1..3`, false},
+		{`5 in 1..1000000000`, true}, // no array is allocated
+		{`0 in 1..1000000000`, false},
+		{`42 in (-9223372036854775807 - 1)..9223372036854775807`, true},
+		{`9223372036854775807 in 0..9223372036854775807`, true},
+		{`(-9223372036854775807 - 1) in (-9223372036854775807 - 1)..0`, true},
+		{`9223372036854775808.0 in 0..9223372036854775807`, false}, // 2^63, exact comparison
+		{`f() in 1..3`, true},
+		{`f() in 3..5`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.code, func(t *testing.T) {
+			program, err := expr.Compile(tt.code, expr.Env(env))
+			require.NoError(t, err, "compile error")
+
+			got, err := expr.Run(program, env)
+			require.NoError(t, err, "run error")
+
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestExpr_in_range_evaluates_left_side_once(t *testing.T) {
+	calls := 0
+	env := map[string]interface{}{
+		"f": func() int {
+			calls++
+			return 2
+		},
+	}
+
+	program, err := expr.Compile(`f() in 1..3`, expr.Env(env))
+	require.NoError(t, err)
+
+	got, err := expr.Run(program, env)
+	require.NoError(t, err)
+	assert.Equal(t, true, got)
+	assert.Equal(t, 1, calls, "left side of in must be evaluated only once")
+
+	// Even for very large ranges no array is constructed and the
+	// function is called only once.
+	calls = 0
+	program, err = expr.Compile(`f() in 1..1000000000`, expr.Env(env))
+	require.NoError(t, err)
+
+	got, err = expr.Run(program, env)
+	require.NoError(t, err)
+	assert.Equal(t, true, got)
+	assert.Equal(t, 1, calls, "left side of in must be evaluated only once")
+}
+
+func TestExpr_in_range_consistency(t *testing.T) {
+	// The optimized boundary comparison must behave exactly like the
+	// membership check over the materialized range.
+	values := []interface{}{
+		0, 1, 2, 3, 4, -1,
+		int8(2), int16(2), int32(2), int64(2),
+		uint(2), uint8(2), uint16(2), uint32(2), uint64(2),
+		0.0, 1.5, 2.0, 2.5, -1.0, float32(2.0),
+		"a", "2", "", true, false, nil,
+	}
+	ranges := []string{`1..3`, `-5..-1`, `-1..1`, `5..1`, `0..0`}
+	for _, rng := range ranges {
+		for _, v := range values {
+			env := map[string]interface{}{"x": v}
+			code := `x in ` + rng
+
+			program, err := expr.Compile(code, expr.Env(env))
+			require.NoError(t, err)
+			got, err := expr.Run(program, env)
+			require.NoError(t, err)
+
+			program, err = expr.Compile(code, expr.Env(env), expr.Optimize(false))
+			require.NoError(t, err)
+			want, err := expr.Run(program, env)
+			require.NoError(t, err)
+
+			assert.Equal(t, want, got, "%v (%T) in %v", v, v, rng)
+		}
+	}
+}
+
+func TestExpr_range_memory_budget(t *testing.T) {
+	_, err := expr.Eval(`1..1000000000`, nil)
+	require.Error(t, err)
+	require.Equal(t, "memory budget exceeded (1:2)\n | 1..1000000000\n | .^", err.Error())
+
+	// The size of the range overflows int64 and must not be silently
+	// replaced with an empty slice.
+	_, err = expr.Eval(`(-9223372036854775807 - 1)..9223372036854775807`, nil)
+	require.Error(t, err)
+	require.Equal(t, "memory budget exceeded (1:27)\n | (-9223372036854775807 - 1)..9223372036854775807\n | ..........................^", err.Error())
+}
+
 func TestExpr_optional_chaining(t *testing.T) {
 	env := map[string]interface{}{}
 	program, err := expr.Compile("foo?.bar.baz", expr.Env(env), expr.AllowUndefinedVariables())

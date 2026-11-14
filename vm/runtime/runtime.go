@@ -206,9 +206,78 @@ func Slice(array, from, to interface{}) interface{} {
 	panic(fmt.Sprintf("cannot slice %v", from))
 }
 
+// Range represents an integer range [Min, Max]. The optimizer replaces
+// a constant integer range on the right side of the "in" operator with
+// a Range value, so the membership check is performed with boundary
+// comparisons and no slice is allocated, even for very large ranges.
+type Range struct {
+	Min, Max int
+}
+
+func (r Range) String() string {
+	return fmt.Sprintf("%v..%v", r.Min, r.Max)
+}
+
+// Contains reports whether needle is a member of the range. It behaves
+// exactly like In(needle, MakeRange(r.Min, r.Max)), but works in O(1)
+// and never allocates.
+func (r Range) Contains(needle interface{}) bool {
+	switch v := needle.(type) {
+	case int:
+		return r.Min <= v && v <= r.Max
+	case int8:
+		return r.containsInt64(int64(v))
+	case int16:
+		return r.containsInt64(int64(v))
+	case int32:
+		return r.containsInt64(int64(v))
+	case int64:
+		return r.containsInt64(v)
+	case uint:
+		return r.containsInt64(int64(v))
+	case uint8:
+		return r.containsInt64(int64(v))
+	case uint16:
+		return r.containsInt64(int64(v))
+	case uint32:
+		return r.containsInt64(int64(v))
+	case uint64:
+		return r.containsInt64(int64(v))
+	case float32:
+		return r.containsFloat64(float64(v))
+	case float64:
+		return r.containsFloat64(v)
+	}
+	return false
+}
+
+func (r Range) containsInt64(v int64) bool {
+	return int64(r.Min) <= v && v <= int64(r.Max)
+}
+
+func (r Range) containsFloat64(f float64) bool {
+	// A float may be a member of an integer range only if it is an
+	// integer itself. Comparing it to the boundaries as a float would
+	// be an approximation, so the value is converted to an integer
+	// exactly and compared as an integer.
+	if f != math.Trunc(f) || f < minInt64Float || f >= maxInt64Float {
+		return false
+	}
+	return r.containsInt64(int64(f))
+}
+
+// The int64 boundaries as exactly representable float64 values.
+const (
+	minInt64Float = -9223372036854775808.0 // -2^63
+	maxInt64Float = 9223372036854775808.0  // 2^63
+)
+
 func In(needle interface{}, array interface{}) bool {
 	if array == nil {
 		return false
+	}
+	if rng, ok := array.(Range); ok {
+		return rng.Contains(needle)
 	}
 	v := reflect.ValueOf(array)
 
@@ -309,8 +378,12 @@ func Exponent(a, b interface{}) float64 {
 }
 
 func MakeRange(min, max int) []int {
+	if max < min {
+		return []int{}
+	}
 	size := max - min + 1
 	if size <= 0 {
+		// The range is so large that the size calculation overflowed.
 		return []int{}
 	}
 	rng := make([]int, size)

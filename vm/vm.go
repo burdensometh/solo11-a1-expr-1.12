@@ -258,8 +258,16 @@ func (vm *VM) Run(program *Program, env interface{}) (_ interface{}, err error) 
 			min := runtime.ToInt(a)
 			max := runtime.ToInt(b)
 			size := max - min + 1
-			if vm.memory+size >= vm.memoryBudget {
-				panic("memory budget exceeded")
+			if max >= min {
+				// As max >= min, the size of the range always fits into
+				// uint64, so its computation never overflows. A zero
+				// size means the range spans the whole int64 domain and
+				// even the uint64 computation overflowed.
+				size64 := uint64(max) - uint64(min) + 1
+				if size64 == 0 || size64 >= uint64(vm.memoryBudget-vm.memory) {
+					panic("memory budget exceeded")
+				}
+				size = int(size64)
 			}
 			vm.push(runtime.MakeRange(min, max))
 			vm.memory += size
