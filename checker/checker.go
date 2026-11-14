@@ -94,6 +94,8 @@ func (v *visitor) visit(node ast.Node) (reflect.Type, info) {
 		t, i = v.CallNode(n)
 	case *ast.BuiltinNode:
 		t, i = v.BuiltinNode(n)
+	case *ast.HasPathNode:
+		t, i = v.HasPathNode(n)
 	case *ast.ClosureNode:
 		t, i = v.ClosureNode(n)
 	case *ast.PointerNode:
@@ -758,6 +760,49 @@ func (v *visitor) BuiltinNode(node *ast.BuiltinNode) (reflect.Type, info) {
 	default:
 		return v.error(node, "unknown builtin %v", node.Name)
 	}
+}
+
+func (v *visitor) HasPathNode(node *ast.HasPathNode) (reflect.Type, info) {
+	// has_path accepts only a plain field/index path: identifiers, member
+	// access and the closure pointer accessor (#). Method calls (including a
+	// bare method value used as a callable), optional chaining and slices
+	// are not paths.
+	for n := node.Node; ; {
+		switch m := n.(type) {
+		case *ast.IdentifierNode, *ast.PointerNode:
+		case *ast.MemberNode:
+			if m.Optional {
+				return v.error(node, "has_path: only field and index paths are allowed")
+			}
+			n = m.Node
+			continue
+		case *ast.CallNode:
+			return v.error(node, "has_path: only field and index paths are allowed")
+		default:
+			return v.error(node, "has_path: only field and index paths are allowed")
+		}
+		break
+	}
+
+	// Visiting the path runs the usual typing rules, populating FieldIndex,
+	// Method, Deref and alias information as for a normal value fetch.
+	t, _ := v.visit(node.Node)
+	if v.err != nil {
+		return t, info{}
+	}
+
+	// After typing, reject any member that resolved to a method.
+	for n := node.Node; ; {
+		member, ok := n.(*ast.MemberNode)
+		if !ok {
+			break
+		}
+		if member.Method {
+			return v.error(node, "has_path: only field and index paths are allowed")
+		}
+		n = member.Node
+	}
+	return boolType, info{}
 }
 
 func (v *visitor) ClosureNode(node *ast.ClosureNode) (reflect.Type, info) {

@@ -621,6 +621,24 @@ func TestParse_optional_chaining(t *testing.T) {
 				},
 			},
 		},
+		{
+			"has_path(foo)",
+			&HasPathNode{
+				Node: &IdentifierNode{Value: "foo"},
+			},
+		},
+		{
+			"has_path(foo.bar[0])",
+			&HasPathNode{
+				Node: &MemberNode{
+					Node: &MemberNode{
+						Node:     &IdentifierNode{Value: "foo"},
+						Property: &StringNode{Value: "bar"},
+					},
+					Property: &IntegerNode{Value: 0},
+				},
+			},
+		},
 	}
 	for _, test := range parseTests {
 		actual, err := parser.Parse(test.input)
@@ -630,4 +648,22 @@ func TestParse_optional_chaining(t *testing.T) {
 		}
 		assert.Equal(t, Dump(test.expected), Dump(actual.Node), test.input)
 	}
+}
+
+func TestParse_has_path(t *testing.T) {
+	_, err := parser.Parse("has_path()")
+	assert.Error(t, err)
+
+	tree, err := parser.Parse("has_path(foo.bar[0])")
+	assert.NoError(t, err)
+	expected := &HasPathNode{
+		Node: &MemberNode{
+			Node: &MemberNode{
+				Node:     &IdentifierNode{Value: "foo"},
+				Property: &StringNode{Value: "bar"},
+			},
+			Property: &IntegerNode{Value: 0},
+		},
+	}
+	assert.Equal(t, Dump(expected), Dump(tree.Node))
 }

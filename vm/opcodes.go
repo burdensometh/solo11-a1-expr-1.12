@@ -15,6 +15,8 @@ const (
 	OpLoadEnv
 	OpFetch
 	OpFetchField
+	OpHas
+	OpHasField
 	OpMethod
 	OpTrue
 	OpFalse

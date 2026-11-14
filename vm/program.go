@@ -109,6 +109,12 @@ func (program *Program) Disassemble() string {
 		case OpFetchField:
 			constant("OpFetchField")
 
+		case OpHas:
+			code("OpHas")
+
+		case OpHasField:
+			constant("OpHasField")
+
 		case OpMethod:
 			constant("OpMethod")
 

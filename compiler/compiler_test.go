@@ -258,3 +258,30 @@ func TestCompile(t *testing.T) {
 		assert.Equal(t, test.program.Disassemble(), program.Disassemble(), test.input)
 	}
 }
+
+func TestCompile_has_path(t *testing.T) {
+	env := Env{}
+
+	t.Run("typed field uses OpHasField", func(t *testing.T) {
+		program, err := expr.Compile(`has_path(A.B.C.D)`, expr.Env(env), expr.Optimize(false))
+		require.NoError(t, err)
+		assert.Contains(t, program.Disassemble(), "OpHasField")
+	})
+
+	t.Run("map index uses OpHas", func(t *testing.T) {
+		mapEnv := map[string]interface{}{
+			"m": map[string]int{"a": 1},
+		}
+		program, err := expr.Compile(`has_path(m["a"])`, expr.Env(mapEnv), expr.Optimize(false))
+		require.NoError(t, err)
+		assert.Contains(t, program.Disassemble(), "OpHas")
+	})
+
+	t.Run("result is correct", func(t *testing.T) {
+		program, err := expr.Compile(`has_path(A.B.C.D)`, expr.Env(env), expr.AsBool())
+		require.NoError(t, err)
+		out, err := expr.Run(program, env)
+		require.NoError(t, err)
+		assert.Equal(t, true, out)
+	})
+}

@@ -126,6 +126,31 @@ func (vm *VM) Run(program *Program, env interface{}) (_ interface{}, err error) 
 			a := vm.pop()
 			vm.push(runtime.FetchField(a, program.Constants[arg].(*runtime.Field)))
 
+		case OpHas:
+			b := vm.pop()
+			a := vm.pop()
+			exists := runtime.Has(a, b)
+			if exists {
+				// Re-fetch only after the existence check succeeded, so a
+				// missing element never panics. The index expression itself
+				// has already been evaluated exactly once.
+				vm.push(runtime.Fetch(a, b))
+			} else {
+				vm.push(nil)
+			}
+			vm.push(exists)
+
+		case OpHasField:
+			a := vm.pop()
+			field := program.Constants[arg].(*runtime.Field)
+			exists := runtime.HasField(a, field)
+			if exists {
+				vm.push(runtime.FetchField(a, field))
+			} else {
+				vm.push(nil)
+			}
+			vm.push(exists)
+
 		case OpLoadEnv:
 			vm.push(env)
 

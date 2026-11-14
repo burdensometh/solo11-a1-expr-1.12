@@ -62,13 +62,14 @@ var binaryOperators = map[string]operator{
 }
 
 var builtins = map[string]builtin{
-	"all":    {2},
-	"none":   {2},
-	"any":    {2},
-	"one":    {2},
-	"filter": {2},
-	"map":    {2},
-	"count":  {2},
+	"all":      {2},
+	"none":     {2},
+	"any":      {2},
+	"one":      {2},
+	"filter":   {2},
+	"map":      {2},
+	"count":    {2},
+	"has_path": {1},
 }
 
 type parser struct {
@@ -356,13 +357,19 @@ func (p *parser) parseIdentifierExpression(token Token) Node {
 			if b.arity == 1 {
 				arguments = make([]Node, 1)
 				arguments[0] = p.parseExpression(0)
+				p.expect(Bracket, ")")
+				if token.Value == "has_path" {
+					node = &HasPathNode{Node: arguments[0]}
+					node.SetLocation(token.Location)
+					return node
+				}
 			} else if b.arity == 2 {
 				arguments = make([]Node, 2)
 				arguments[0] = p.parseExpression(0)
 				p.expect(Operator, ",")
 				arguments[1] = p.parseClosure()
+				p.expect(Bracket, ")")
 			}
-			p.expect(Bracket, ")")
 
 			node = &BuiltinNode{
 				Name:      token.Value,

@@ -136,6 +136,15 @@ type BuiltinNode struct {
 	Arguments []Node
 }
 
+// HasPathNode represents a has_path(path) expression. It reports whether the
+// given path exists in the environment: a terminal field or element is
+// considered present even when its value is nil, while a missing element or a
+// nil value in the middle of the path makes the whole path absent.
+type HasPathNode struct {
+	base
+	Node Node
+}
+
 type ClosureNode struct {
 	base
 	Node Node

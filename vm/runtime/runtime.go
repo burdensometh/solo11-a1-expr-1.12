@@ -82,6 +82,99 @@ type Field struct {
 	Path  []string
 }
 
+// Has reports whether an element i can be fetched from from. Unlike Fetch, a
+// map key is reported as present even when its value is nil, and an out of
+// range index or a missing map key results in false instead of a panic or a
+// zero value. Methods are never looked up, and errors unrelated to existence
+// (wrong index type, unsupported container kind) are still raised.
+func Has(from, i interface{}) bool {
+	v := reflect.ValueOf(from)
+	if v.Kind() == reflect.Invalid {
+		return false
+	}
+
+	// Structs, maps, and slices can be accessed through a pointer or through
+	// a value, when they are accessed through a pointer we don't want to
+	// copy them to a value.
+	if v.Kind() == reflect.Ptr {
+		if v.IsNil() {
+			return false
+		}
+		v = reflect.Indirect(v)
+	}
+
+	switch v.Kind() {
+	case reflect.Array, reflect.Slice, reflect.String:
+		index := ToInt(i)
+		if index < 0 {
+			index = v.Len() + index
+		}
+		return index >= 0 && index < v.Len()
+
+	case reflect.Map:
+		if v.IsNil() {
+			return false
+		}
+		var value reflect.Value
+		if i == nil {
+			value = v.MapIndex(reflect.Zero(v.Type().Key()))
+		} else {
+			// A value of an incompatible key type is an evaluation error,
+			// not a missing element, so let reflect report it.
+			value = v.MapIndex(reflect.ValueOf(i))
+		}
+		return value.IsValid()
+
+	case reflect.Struct:
+		fieldName := i.(string)
+		value := v.FieldByNameFunc(func(name string) bool {
+			field, _ := v.Type().FieldByName(name)
+			if field.Tag.Get("expr") == fieldName {
+				return true
+			}
+			return name == fieldName
+		})
+		return value.IsValid()
+	}
+	panic(fmt.Sprintf("cannot fetch %v from %T", i, from))
+}
+
+// HasField reports whether the typed field exists on from. The field index is
+// relative to from (the immediate base of the member access), and may itself
+// span embedded structs and a pointer. A nil pointer in the middle of the
+// index path makes the field absent, but reaching the terminal field means the
+// path exists even when its value is a nil pointer or a zero value.
+func HasField(from interface{}, field *Field) bool {
+	v := reflect.ValueOf(from)
+	if v.Kind() == reflect.Invalid {
+		return false
+	}
+	if v.Kind() == reflect.Ptr {
+		if v.IsNil() {
+			return false
+		}
+		v = reflect.Indirect(v)
+	}
+	if len(field.Index) == 1 {
+		return v.Kind() == reflect.Struct && field.Index[0] < v.NumField()
+	}
+	for i, x := range field.Index {
+		if i > 0 {
+			if v.Kind() == reflect.Ptr {
+				if v.IsNil() {
+					return false
+				}
+				v = v.Elem()
+			}
+		}
+		if v.Kind() != reflect.Struct || x >= v.NumField() {
+			return false
+		}
+		v = v.Field(x)
+	}
+	return true
+}
+
 func FetchField(from interface{}, field *Field) interface{} {
 	v := reflect.ValueOf(from)
 	kind := v.Kind()

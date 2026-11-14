@@ -42,6 +42,8 @@ func Walk(node *Node, v Visitor) {
 		for i := range n.Arguments {
 			Walk(&n.Arguments[i], v)
 		}
+	case *HasPathNode:
+		Walk(&n.Node, v)
 	case *ClosureNode:
 		Walk(&n.Node, v)
 	case *PointerNode:

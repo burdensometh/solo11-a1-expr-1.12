@@ -238,6 +238,26 @@ int("123") == 123
 
 Returns the float value of a number or a string.
 
+### has_path(path)
+
+Returns **true** if the given field or index path exists in the environment.
+
+Unlike a plain value fetch, `has_path` distinguishes a missing element from a
+`nil` or zero value. If the terminal field or element exists, the result is
+**true** even when its value is `nil`. If any element in the middle of the
+path is missing or `nil`, the result is **false**.
+
+```expr
+has_path(author.User.Name)
+has_path(items[0])
+has_path(dict["key"])
+```
+
+The argument must be a field or index path. Method calls, optional chaining
+(`?.`) and slices are not allowed. Index expressions are evaluated once, and
+errors unrelated to existence (for example indexing a non-container) are still
+raised rather than turned into **false**.
+
 ## Predicate
 
 The predicate is an expression that accepts a single argument. To access

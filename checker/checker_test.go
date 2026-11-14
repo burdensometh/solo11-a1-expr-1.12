@@ -933,3 +933,36 @@ func TestCheck_do_not_override_params_for_functions(t *testing.T) {
 		require.Contains(t, err.Error(), "cannot use int as argument")
 	})
 }
+
+func TestCheck_has_path(t *testing.T) {
+	success := []string{
+		"has_path(Int)",
+		"has_path(Foo.Bar.Baz)",
+		"has_path(ArrayOfInt[0])",
+		"has_path(MapOfAny[\"key\"])",
+		"has_path(Embed.EmbedString)",
+		"all(ArrayOfFoo, {has_path(#.Bar.Baz)})",
+		"has_path(env.Int)",
+	}
+	for _, input := range success {
+		tree, err := parser.Parse(input)
+		require.NoError(t, err, input)
+		typ, err := checker.Check(tree, conf.New(mock.Env{}))
+		require.NoError(t, err, input)
+		assert.Equal(t, reflect.Bool, typ.Kind(), input)
+	}
+
+	failure := []string{
+		"has_path(Int + 1)",
+		"has_path(Int[0:1])",
+		"has_path(Foo.Method())",
+		"has_path(Foo.Method)",
+		"has_path(Foo?.Bar)",
+	}
+	for _, input := range failure {
+		tree, err := parser.Parse(input)
+		require.NoError(t, err, input)
+		_, err = checker.Check(tree, conf.New(mock.Env{}))
+		assert.Error(t, err, input)
+	}
+}

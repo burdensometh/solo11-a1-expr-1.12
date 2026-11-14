@@ -2109,3 +2109,160 @@ func (p *patcher) Visit(node *ast.Node) {
 		})
 	}
 }
+
+type hasPathInner struct {
+	Value int
+	Ptr   *int
+}
+
+type hasPathEnv struct {
+	Name   string
+	Inner  *hasPathInner
+	Items  []int
+	Dict   map[string]interface{}
+	Any    interface{}
+	NilMap map[string]int
+}
+
+func TestExpr_has_path(t *testing.T) {
+	env := &hasPathEnv{
+		Name:  "root",
+		Inner: &hasPathInner{Value: 0, Ptr: nil},
+		Items: []int{10, 20},
+		Dict: map[string]interface{}{
+			"present": "v",
+			"null":    nil,
+			"zero":    0,
+		},
+		Any:    nil,
+		NilMap: nil,
+	}
+
+	tests := []struct {
+		code string
+		want interface{}
+	}{
+		// A typed struct field exists even when its value is zero or nil.
+		{`has_path(Name)`, true},
+		{`has_path(Inner)`, true},
+		{`has_path(Inner.Value)`, true},
+		{`has_path(Inner.Ptr)`, true},
+		{`has_path(Any)`, true},
+		// Indexed paths.
+		{`has_path(Items[0])`, true},
+		{`has_path(Items[1])`, true},
+		{`has_path(Items[5])`, false},
+		{`has_path(Items[-1])`, true},
+		// Map keys: presence is independent of the value.
+		{`has_path(Dict["present"])`, true},
+		{`has_path(Dict["null"])`, true},
+		{`has_path(Dict["zero"])`, true},
+		{`has_path(Dict["absent"])`, false},
+		// A nil map never contains an element.
+		{`has_path(NilMap["x"])`, false},
+	}
+	for _, tt := range tests {
+		program, err := expr.Compile(tt.code, expr.Env(env), expr.AsBool())
+		require.NoError(t, err, tt.code)
+		got, err := expr.Run(program, env)
+		require.NoError(t, err, tt.code)
+		assert.Equal(t, tt.want, got, tt.code)
+	}
+}
+
+func TestExpr_has_path_nil_intermediate(t *testing.T) {
+	env := &hasPathEnv{Inner: nil}
+	program, err := expr.Compile(`has_path(Inner.Value)`, expr.Env(env), expr.AsBool())
+	require.NoError(t, err)
+	got, err := expr.Run(program, env)
+	require.NoError(t, err)
+	assert.Equal(t, false, got)
+}
+
+func TestExpr_has_path_map_env(t *testing.T) {
+	env := map[string]interface{}{
+		"foo": map[string]interface{}{"bar": nil},
+		"arr": []int{1},
+	}
+	tests := []struct {
+		code string
+		want interface{}
+	}{
+		{`has_path(foo)`, true},
+		{`has_path(foo.bar)`, true},
+		{`has_path(foo.baz)`, false},
+		{`has_path(arr[0])`, true},
+		{`has_path(arr[1])`, false},
+		{`has_path(env["foo"])`, true},
+		{`has_path(env["nope"])`, false},
+	}
+	for _, tt := range tests {
+		program, err := expr.Compile(tt.code, expr.Env(env), expr.AsBool())
+		require.NoError(t, err, tt.code)
+		got, err := expr.Run(program, env)
+		require.NoError(t, err, tt.code)
+		assert.Equal(t, tt.want, got, tt.code)
+	}
+}
+
+func TestExpr_has_path_index_evaluated_once(t *testing.T) {
+	calls := 0
+	env := map[string]interface{}{
+		"arr": []int{1, 2, 3},
+		"idx": func() int { calls++; return 1 },
+	}
+	program, err := expr.Compile(`has_path(arr[idx()])`, expr.Env(env), expr.AsBool())
+	require.NoError(t, err)
+	got, err := expr.Run(program, env)
+	require.NoError(t, err)
+	assert.Equal(t, true, got)
+	assert.Equal(t, 1, calls)
+}
+
+func TestExpr_has_path_does_not_swallow_errors(t *testing.T) {
+	// Without a typed environment the type mismatch only surfaces at runtime,
+	// and has_path must propagate it instead of silently returning false.
+	env := map[string]interface{}{"n": 5}
+	program, err := expr.Compile(`has_path(n[0])`,
+		expr.AllowUndefinedVariables(), expr.AsBool())
+	require.NoError(t, err)
+	_, err = expr.Run(program, env)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot fetch 0 from int")
+}
+
+func TestExpr_has_path_rejects_non_paths(t *testing.T) {
+	env := &hasPathEnv{}
+	for _, code := range []string{
+		`has_path(Inner.Value + 1)`,
+		`has_path(Items[0:1])`,
+	} {
+		_, err := expr.Compile(code, expr.Env(env), expr.AsBool())
+		require.Error(t, err, code)
+		assert.Contains(t, err.Error(), "has_path", code)
+	}
+}
+
+func TestExpr_has_path_closure(t *testing.T) {
+	env := map[string]interface{}{
+		"arr": []map[string]interface{}{{"k": 1}, nil},
+	}
+	program, err := expr.Compile(`filter(arr, {has_path(#.k)})`, expr.Env(env))
+	require.NoError(t, err)
+	got, err := expr.Run(program, env)
+	require.NoError(t, err)
+	assert.Equal(t, []interface{}{map[string]interface{}{"k": 1}}, got)
+}
+
+func TestExpr_has_path_normal_fetch_unchanged(t *testing.T) {
+	env := &hasPathEnv{
+		Dict: map[string]interface{}{},
+	}
+	// Ordinary map access still returns nil for a missing key and does not
+	// take the existence-check code path.
+	program, err := expr.Compile(`Dict["absent"] == nil`, expr.Env(env))
+	require.NoError(t, err)
+	got, err := expr.Run(program, env)
+	require.NoError(t, err)
+	assert.Equal(t, true, got)
+}

@@ -183,6 +183,8 @@ func (c *compiler) compile(node ast.Node) {
 		c.CallNode(n)
 	case *ast.BuiltinNode:
 		c.BuiltinNode(n)
+	case *ast.HasPathNode:
+		c.HasPathNode(n)
 	case *ast.ClosureNode:
 		c.ClosureNode(n)
 	case *ast.PointerNode:
@@ -566,6 +568,170 @@ func (c *compiler) CallNode(node *ast.CallNode) {
 	} else {
 		c.emit(OpCall, len(node.Arguments))
 	}
+}
+
+// emitRootBool collapses the [value, exists] pair left by OpHas/OpHasField
+// into a single boolean result on the stack.
+func (c *compiler) emitRootBool() {
+	trueJump := c.emit(OpJumpIfTrue, placeholder)
+	c.emit(OpPop) // value
+	c.emit(OpFalse)
+	end := c.emit(OpJump, placeholder)
+	c.patchJump(trueJump)
+	c.emit(OpPop) // value
+	c.emit(OpPop) // exists (true)
+	c.emit(OpTrue)
+	c.patchJump(end)
+}
+
+// emitNilPresence turns a value already on the stack into a presence boolean:
+// a non-nil value means present, nil means absent.
+func (c *compiler) emitNilPresence() {
+	fail := c.emit(OpJumpIfNil, placeholder)
+	c.emit(OpPop)
+	c.emit(OpTrue)
+	end := c.emit(OpJump, placeholder)
+	c.patchJump(fail)
+	c.emit(OpPop)
+	c.emit(OpFalse)
+	c.patchJump(end)
+}
+
+// loadRootIdentifier emits code loading a root identifier value.
+func (c *compiler) loadRootIdentifier(ident *ast.IdentifierNode) {
+	if ident.Value == "env" {
+		c.emit(OpLoadEnv)
+	} else if c.mapEnv {
+		c.emit(OpLoadFast, c.addConstant(ident.Value))
+	} else if len(ident.FieldIndex) > 0 {
+		c.emit(OpLoadField, c.addConstant(&runtime.Field{
+			Index: ident.FieldIndex,
+			Path:  []string{ident.Value},
+		}))
+	} else {
+		c.emit(OpLoadConst, c.addConstant(ident.Value))
+	}
+}
+
+func (c *compiler) HasPathNode(node *ast.HasPathNode) {
+	// has_path(root) — a root identifier or closure pointer by itself.
+	if ident, ok := node.Node.(*ast.IdentifierNode); ok {
+		switch {
+		case ident.Value == "env":
+			// The environment itself is always present when the program runs.
+			c.emit(OpLoadEnv)
+			c.emit(OpPop)
+			c.emit(OpTrue)
+		case c.mapEnv:
+			// A map root exists when its key is present, even if the value
+			// is nil. OpHas leaves [value, exists] on the stack.
+			c.emit(OpLoadEnv)
+			c.emitPush(ident.Value)
+			c.emit(OpHas)
+			c.emitRootBool()
+		case len(ident.FieldIndex) > 0:
+			// A typed struct field exists by the type system regardless of
+			// its (possibly nil) runtime value. OpHasField leaves
+			// [value, exists] on the stack.
+			c.emit(OpLoadEnv)
+			c.emit(OpHasField, c.addConstant(&runtime.Field{
+				Index: ident.FieldIndex,
+				Path:  []string{ident.Value},
+			}))
+			c.emitRootBool()
+		default:
+			// Untyped identifier: fall back to a nil check.
+			c.loadRootIdentifier(ident)
+			c.emitNilPresence()
+		}
+		return
+	}
+
+	if _, ok := node.Node.(*ast.PointerNode); ok {
+		c.compile(node.Node)
+		c.emitNilPresence()
+		return
+	}
+
+	// Collect the member chain, outermost member first.
+	var members []*ast.MemberNode
+	for n := node.Node; ; {
+		member, ok := n.(*ast.MemberNode)
+		if !ok {
+			break
+		}
+		members = append(members, member)
+		n = member.Node
+	}
+	base := members[len(members)-1].Node
+
+	// Emit the base value and start a chain. The stack is kept at a uniform
+	// depth at every failure jump: a failed step leaves [value, false], and
+	// a nil intermediate is normalized to the same shape before jumping, so
+	// all failures share one epilogue.
+	c.chains = append(c.chains, []int{})
+	jumpChain := &c.chains[len(c.chains)-1]
+	switch b := base.(type) {
+	case *ast.IdentifierNode:
+		c.loadRootIdentifier(b)
+	default:
+		// Covers PointerNode (#) and any other supported path base.
+		c.compile(base)
+	}
+	// A nil root is a failure: turn [nil] into [nil, false].
+	rootFail := c.emit(OpJumpIfNil, placeholder)
+	rootOK := c.emit(OpJump, placeholder)
+	c.patchJump(rootFail)
+	c.emit(OpFalse)
+	*jumpChain = append(*jumpChain, c.emit(OpJump, placeholder))
+	c.patchJump(rootOK)
+
+	// Walk the members innermost to outermost. Each MemberNode carries a
+	// FieldIndex relative to its immediate base (as set by the checker), so
+	// no flattening is needed and OpHasField always receives the matching
+	// value. After each step the stack is [..., value, exists]; a false flag
+	// jumps to the epilogue. An OpHas index expression is evaluated once.
+	for i := len(members) - 1; i >= 0; i-- {
+		member := members[i]
+		if len(member.FieldIndex) > 0 {
+			c.emitLocation(member.Location(), OpHasField, c.addConstant(
+				&runtime.Field{Index: member.FieldIndex, Path: []string{member.Name}},
+			))
+		} else {
+			c.compile(member.Property)
+			c.emit(OpHas)
+		}
+
+		// [..., value, exists]
+		*jumpChain = append(*jumpChain, c.emit(OpJumpIfFalse, placeholder))
+
+		if i > 0 {
+			c.emit(OpPop) // drop flag, keep value
+			// A nil intermediate is a failure: normalize [nil] -> [nil, false].
+			fail := c.emit(OpJumpIfNil, placeholder)
+			ok := c.emit(OpJump, placeholder)
+			c.patchJump(fail)
+			c.emit(OpFalse)
+			*jumpChain = append(*jumpChain, c.emit(OpJump, placeholder))
+			c.patchJump(ok)
+		}
+	}
+
+	// Success: stack is [..., value, true]. Replace with a single true.
+	c.emit(OpPop) // value
+	c.emit(OpPop) // true
+	c.emit(OpTrue)
+	end := c.emit(OpJump, placeholder)
+
+	// Epilogue: every failure lands here with [..., value, false].
+	for _, ph := range *jumpChain {
+		c.patchJump(ph)
+	}
+	c.chains = c.chains[:len(c.chains)-1]
+	c.emit(OpPop) // value (nil)
+	c.emit(OpPop) // false
+	c.emit(OpFalse)
+	c.patchJump(end)
 }
 
 func (c *compiler) BuiltinNode(node *ast.BuiltinNode) {
