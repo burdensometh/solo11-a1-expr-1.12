@@ -98,6 +98,8 @@ func (v *visitor) visit(node ast.Node) (reflect.Type, info) {
 		t, i = v.ClosureNode(n)
 	case *ast.PointerNode:
 		t, i = v.PointerNode(n)
+	case *ast.ContextNode:
+		t, i = v.ContextNode(n)
 	case *ast.ConditionalNode:
 		t, i = v.ConditionalNode(n)
 	case *ast.ArrayNode:
@@ -778,6 +780,12 @@ func (v *visitor) PointerNode(node *ast.PointerNode) (reflect.Type, info) {
 		return collection.Elem(), info{}
 	}
 	return v.error(node, "cannot use %v as array", collection)
+}
+
+func (v *visitor) ContextNode(node *ast.ContextNode) (reflect.Type, info) {
+	// The context node is only inserted by the context patcher in front of a
+	// function which accepts context.Context; it always has that type.
+	return contextType, info{}
 }
 
 func (v *visitor) ConditionalNode(node *ast.ConditionalNode) (reflect.Type, info) {

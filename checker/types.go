@@ -1,6 +1,7 @@
 package checker
 
 import (
+	"context"
 	"reflect"
 	"time"
 
@@ -19,6 +20,7 @@ var (
 	anyType      = reflect.TypeOf(new(interface{})).Elem()
 	timeType     = reflect.TypeOf(time.Time{})
 	durationType = reflect.TypeOf(time.Duration(0))
+	contextType  = reflect.TypeOf((*context.Context)(nil)).Elem()
 	functionType = reflect.TypeOf(new(func(...interface{}) (interface{}, error))).Elem()
 	errorType    = reflect.TypeOf((*error)(nil)).Elem()
 )

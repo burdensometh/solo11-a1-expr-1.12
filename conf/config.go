@@ -21,6 +21,11 @@ type Config struct {
 	ConstFns    map[string]reflect.Value
 	Visitors    []ast.Visitor
 	Functions   map[string]*builtin.Function
+
+	// ContextName is the name of the environment variable declared with the
+	// WithContext option. Functions which accept a context receive the
+	// context of the current run from it; no context value is compiled in.
+	ContextName string
 }
 
 // CreateNew creates new config with default values.

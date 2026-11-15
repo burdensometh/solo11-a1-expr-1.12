@@ -32,6 +32,7 @@ func Compile(tree *parser.Tree, config *conf.Config) (program *Program, err erro
 	if config != nil {
 		c.mapEnv = config.MapEnv
 		c.cast = config.Expect
+		c.contextName = config.ContextName
 	}
 
 	c.compile(tree.Node)
@@ -46,14 +47,16 @@ func Compile(tree *parser.Tree, config *conf.Config) (program *Program, err erro
 	}
 
 	program = &Program{
-		Node:      tree.Node,
-		Source:    tree.Source,
-		Locations: c.locations,
-		Constants: c.constants,
-		Bytecode:  c.bytecode,
-		Arguments: c.arguments,
-		Functions: c.functions,
+		Node:        tree.Node,
+		Source:      tree.Source,
+		Locations:   c.locations,
+		Constants:   c.constants,
+		Bytecode:    c.bytecode,
+		Arguments:   c.arguments,
+		Functions:   c.functions,
+		ContextName: c.contextName,
 	}
+	program.SetConstantSizes(MaterializedSizes(c.constants))
 	return
 }
 
@@ -66,6 +69,7 @@ type compiler struct {
 	functionsIndex map[string]int
 	mapEnv         bool
 	cast           reflect.Kind
+	contextName    string
 	nodes          []ast.Node
 	chains         [][]int
 	arguments      []int
@@ -187,6 +191,8 @@ func (c *compiler) compile(node ast.Node) {
 		c.ClosureNode(n)
 	case *ast.PointerNode:
 		c.PointerNode(n)
+	case *ast.ContextNode:
+		c.ContextNode(n)
 	case *ast.ConditionalNode:
 		c.ConditionalNode(n)
 	case *ast.ArrayNode:
@@ -694,6 +700,10 @@ func (c *compiler) ClosureNode(node *ast.ClosureNode) {
 
 func (c *compiler) PointerNode(node *ast.PointerNode) {
 	c.emit(OpPointer)
+}
+
+func (c *compiler) ContextNode(node *ast.ContextNode) {
+	c.emit(OpLoadContext)
 }
 
 func (c *compiler) ConditionalNode(node *ast.ConditionalNode) {

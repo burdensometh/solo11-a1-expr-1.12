@@ -145,6 +145,14 @@ type PointerNode struct {
 	base
 }
 
+// ContextNode represents the cancellation context of the current evaluation.
+// It is inserted in front of the arguments of a host function which accepts a
+// context.Context, and resolves to the context supplied to the run. No context
+// value is ever stored in the compiled program.
+type ContextNode struct {
+	base
+}
+
 type ConditionalNode struct {
 	base
 	Cond Node

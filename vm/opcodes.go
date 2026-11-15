@@ -68,6 +68,7 @@ const (
 	OpGetCount
 	OpGetLen
 	OpPointer
+	OpLoadContext
 	OpBegin
 	OpEnd // This opcode must be at the end of this list.
 )

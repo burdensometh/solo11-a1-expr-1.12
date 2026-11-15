@@ -94,6 +94,18 @@ func Optimize(b bool) Option {
 	}
 }
 
+// WithContext declares the name of a variable which holds the context.Context
+// of a job, and passes that context to host functions which accept a
+// context.Context as their first parameter. The context is resolved at run
+// time (see RunWithContext), so a program compiled once may be evaluated by
+// different jobs with different cancellation signals.
+func WithContext(name string) Option {
+	return func(c *conf.Config) {
+		c.ContextName = name
+		c.Visitors = append(c.Visitors, &conf.ContextPatcher{Config: c})
+	}
+}
+
 // Patch adds visitor to list of visitors what will be applied before compiling AST to bytecode.
 func Patch(visitor ast.Visitor) Option {
 	return func(c *conf.Config) {
@@ -178,6 +190,14 @@ func Compile(input string, ops ...Option) (*vm.Program, error) {
 // Run evaluates given bytecode program.
 func Run(program *vm.Program, env interface{}) (interface{}, error) {
 	return vm.Run(program, env)
+}
+
+// RunWithContext evaluates given bytecode program with the limits of one job.
+// The program is not modified, so the same compiled program may still be run
+// by other jobs, including after this run was cancelled or exceeded its work
+// budget.
+func RunWithContext(program *vm.Program, env interface{}, limits vm.Limits) (interface{}, error) {
+	return vm.RunWithLimits(program, env, limits)
 }
 
 // Eval parses, compiles and runs given input.

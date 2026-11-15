@@ -1,6 +1,7 @@
 package expr_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -11,6 +12,7 @@ import (
 	"github.com/antonmedv/expr"
 	"github.com/antonmedv/expr/ast"
 	"github.com/antonmedv/expr/file"
+	"github.com/antonmedv/expr/vm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -2108,4 +2110,122 @@ func (p *patcher) Visit(node *ast.Node) {
 			Arguments: []ast.Node{n.Node, n.Property},
 		})
 	}
+}
+
+func ExampleRunWithContext() {
+	env := map[string]interface{}{
+		"ctx": context.TODO(),
+		"fn": func(ctx context.Context, n int) int {
+			// A host function which can be canceled by the context.
+			select {
+			case <-ctx.Done():
+				return -1
+			default:
+			}
+			return n
+		},
+	}
+
+	program, err := expr.Compile(`fn(1000000)`, expr.Env(env), expr.WithContext("ctx"))
+	if err != nil {
+		fmt.Printf("%v", err)
+		return
+	}
+
+	// Each job passes its own context and work quota; the program is shared.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	output, err := expr.RunWithContext(program, env, vm.Limits{
+		Context:    ctx,
+		WorkBudget: 2,
+	})
+	if err == nil {
+		fmt.Printf("%v", output)
+		return
+	}
+	fmt.Printf("%v", err)
+
+	// Output: work budget exceeded (work budget 2) (1:1)
+	//  | fn(1000000)
+	//  | ^
+}
+
+func TestRunWithContext_CancelStopsOnlyOneJob(t *testing.T) {
+	program, err := expr.Compile(`all(1..100000, {# > 0})`)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = expr.RunWithContext(program, nil, vm.Limits{Context: ctx})
+	require.Error(t, err)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Contains(t, err.Error(), "all(1..100000, {# > 0})")
+
+	// The compiled program is reusable by another job.
+	out, err := expr.RunWithContext(program, nil, vm.Limits{})
+	require.NoError(t, err)
+	require.Equal(t, true, out)
+}
+
+func TestRunWithContext_WorkBudget(t *testing.T) {
+	program, err := expr.Compile(`map(1..1000, {# * 2})`)
+	require.NoError(t, err)
+
+	work := vm.VM{}
+	_, err = work.RunWithLimits(program, nil, vm.Limits{WorkBudget: 1 << 40})
+	require.NoError(t, err)
+	require.Greater(t, work.WorkUsed(), int64(0))
+
+	_, err = expr.RunWithContext(program, nil, vm.Limits{WorkBudget: work.WorkUsed() - 1})
+	require.Error(t, err)
+	require.ErrorIs(t, err, vm.ErrWorkBudgetExceeded)
+
+	out, err := expr.RunWithContext(program, nil, vm.Limits{WorkBudget: work.WorkUsed()})
+	require.NoError(t, err)
+	require.Equal(t, 2000, out.([]interface{})[999])
+}
+
+func TestRunWithContext_OptimizerDoesNotBypassBudget(t *testing.T) {
+	// A const range folded at compile time must still cost its length.
+	program, err := expr.Compile(`1..100000`)
+	require.NoError(t, err)
+
+	_, err = expr.RunWithContext(program, nil, vm.Limits{WorkBudget: 10})
+	require.Error(t, err)
+	require.ErrorIs(t, err, vm.ErrWorkBudgetExceeded)
+
+	out, err := expr.RunWithContext(program, nil, vm.Limits{})
+	require.NoError(t, err)
+	require.Len(t, out, 100000)
+}
+
+func TestWithContext_FunctionReceivesJobContext(t *testing.T) {
+	env := map[string]interface{}{
+		"ctx": context.TODO(),
+		"id":  func(ctx context.Context, n int) int { return ctx.Value("job").(int) + n },
+	}
+	program, err := expr.Compile(`id(1)`, expr.Env(env), expr.WithContext("ctx"))
+	require.NoError(t, err)
+
+	for job := 1; job <= 3; job++ {
+		ctx := context.WithValue(context.Background(), "job", job)
+		out, err := expr.RunWithContext(program, env, vm.Limits{Context: ctx})
+		require.NoError(t, err)
+		require.Equal(t, job+1, out)
+	}
+}
+
+func TestWithContext_EnvVariableStillWorks(t *testing.T) {
+	env := map[string]interface{}{
+		"ctx": context.WithValue(context.Background(), "job", 10),
+		"id":  func(ctx context.Context, n int) int { return ctx.Value("job").(int) + n },
+	}
+	program, err := expr.Compile(`id(1)`, expr.Env(env), expr.WithContext("ctx"))
+	require.NoError(t, err)
+
+	// The plain Run path still uses the context stored in the environment.
+	out, err := expr.Run(program, env)
+	require.NoError(t, err)
+	require.Equal(t, 11, out)
 }

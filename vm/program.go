@@ -22,6 +22,44 @@ type Program struct {
 	Bytecode  []Opcode
 	Arguments []int
 	Functions []Function
+
+	// ContextName is the environment variable declared by the context option.
+	// It is only the name, never a context value: the context itself is
+	// resolved per run, so a program can serve many jobs.
+	ContextName string
+
+	// constantSizes holds, for every constant, the number of elements it
+	// materializes when pushed. It is precomputed so the OpPush hot path is
+	// just a slice lookup; it is only read, never modified, so the program
+	// stays shareable between jobs.
+	constantSizes []int64
+}
+
+// ConstantSize returns the work cost of pushing constant index arg. Programs
+// built by the compiler carry precomputed sizes; a program assembled by hand
+// falls back to measuring the constant on demand.
+func (program *Program) ConstantSize(arg int) int64 {
+	if arg < 0 || arg >= len(program.Constants) {
+		return 0
+	}
+	if len(program.constantSizes) != len(program.Constants) {
+		return materializedSize(program.Constants[arg])
+	}
+	return program.constantSizes[arg]
+}
+
+// SetConstantSizes stores the precomputed sizes of the program constants.
+func (program *Program) SetConstantSizes(sizes []int64) {
+	program.constantSizes = sizes
+}
+
+// MaterializedSizes measures every constant once, at compile time.
+func MaterializedSizes(constants []interface{}) []int64 {
+	sizes := make([]int64, len(constants))
+	for i, c := range constants {
+		sizes[i] = materializedSize(c)
+	}
+	return sizes
 }
 
 func (program *Program) Disassemble() string {
@@ -268,6 +306,9 @@ func (program *Program) Disassemble() string {
 
 		case OpPointer:
 			code("OpPointer")
+
+		case OpLoadContext:
+			code("OpLoadContext")
 
 		case OpBegin:
 			code("OpBegin")
