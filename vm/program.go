@@ -272,6 +272,18 @@ func (program *Program) Disassemble() string {
 		case OpBegin:
 			code("OpBegin")
 
+		case OpWitnessPush:
+			constant("OpWitnessPush")
+
+		case OpWitnessPop:
+			code("OpWitnessPop")
+
+		case OpWitnessJumpIfFalse:
+			jump("OpWitnessJumpIfFalse")
+
+		case OpWitnessJumpIfTrue:
+			jump("OpWitnessJumpIfTrue")
+
 		case OpEnd:
 			code("OpEnd")
 

@@ -32,6 +32,7 @@ func Compile(tree *parser.Tree, config *conf.Config) (program *Program, err erro
 	if config != nil {
 		c.mapEnv = config.MapEnv
 		c.cast = config.Expect
+		c.witness = config.Witness
 	}
 
 	c.compile(tree.Node)
@@ -66,9 +67,16 @@ type compiler struct {
 	functionsIndex map[string]int
 	mapEnv         bool
 	cast           reflect.Kind
+	witness        bool
 	nodes          []ast.Node
 	chains         [][]int
 	arguments      []int
+}
+
+// addWitnessInfo stores the compile-time information of an all/any
+// builtin among the program constants and returns its index.
+func (c *compiler) addWitnessInfo(name string, loc file.Location) int {
+	return c.addConstant(&WitnessInfo{Name: name, Loc: loc})
 }
 
 func (c *compiler) emitLocation(loc file.Location, op Opcode, arg int) int {
@@ -573,12 +581,22 @@ func (c *compiler) BuiltinNode(node *ast.BuiltinNode) {
 	case "all":
 		c.compile(node.Arguments[0])
 		c.emit(OpBegin)
+		if c.witness {
+			c.emit(OpWitnessPush, c.addWitnessInfo(node.Name, node.Location()))
+		}
 		var loopBreak int
 		c.emitLoop(func() {
 			c.compile(node.Arguments[1])
-			loopBreak = c.emit(OpJumpIfFalse, placeholder)
+			if c.witness {
+				loopBreak = c.emit(OpWitnessJumpIfFalse, placeholder)
+			} else {
+				loopBreak = c.emit(OpJumpIfFalse, placeholder)
+			}
 			c.emit(OpPop)
 		})
+		if c.witness {
+			c.emit(OpWitnessPop)
+		}
 		c.emit(OpTrue)
 		c.patchJump(loopBreak)
 		c.emit(OpEnd)
@@ -600,12 +618,22 @@ func (c *compiler) BuiltinNode(node *ast.BuiltinNode) {
 	case "any":
 		c.compile(node.Arguments[0])
 		c.emit(OpBegin)
+		if c.witness {
+			c.emit(OpWitnessPush, c.addWitnessInfo(node.Name, node.Location()))
+		}
 		var loopBreak int
 		c.emitLoop(func() {
 			c.compile(node.Arguments[1])
-			loopBreak = c.emit(OpJumpIfTrue, placeholder)
+			if c.witness {
+				loopBreak = c.emit(OpWitnessJumpIfTrue, placeholder)
+			} else {
+				loopBreak = c.emit(OpJumpIfTrue, placeholder)
+			}
 			c.emit(OpPop)
 		})
+		if c.witness {
+			c.emit(OpWitnessPop)
+		}
 		c.emit(OpFalse)
 		c.patchJump(loopBreak)
 		c.emit(OpEnd)

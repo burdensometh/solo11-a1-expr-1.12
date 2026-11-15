@@ -69,5 +69,9 @@ const (
 	OpGetLen
 	OpPointer
 	OpBegin
+	OpWitnessPush
+	OpWitnessPop
+	OpWitnessJumpIfFalse
+	OpWitnessJumpIfTrue
 	OpEnd // This opcode must be at the end of this list.
 )

@@ -94,6 +94,21 @@ func Optimize(b bool) Option {
 	}
 }
 
+// Witness enables witness recording for all/any collection predicates.
+// A program compiled with this option records, while it runs, the
+// element that decided each all/any result: the first counterexample
+// for all and the first hit for any. Empty collections are represented
+// by a witness without an element.
+//
+// Witnesses are collected only from the predicates actually evaluated;
+// no predicate is re-run to produce an explanation. Use RunWithWitness
+// to retrieve them. The option does not change the evaluation result.
+func Witness() Option {
+	return func(c *conf.Config) {
+		c.Witness = true
+	}
+}
+
 // Patch adds visitor to list of visitors what will be applied before compiling AST to bytecode.
 func Patch(visitor ast.Visitor) Option {
 	return func(c *conf.Config) {
@@ -178,6 +193,14 @@ func Compile(input string, ops ...Option) (*vm.Program, error) {
 // Run evaluates given bytecode program.
 func Run(program *vm.Program, env interface{}) (interface{}, error) {
 	return vm.Run(program, env)
+}
+
+// RunWithWitness evaluates given bytecode program and returns the
+// witnesses captured while executing the all/any collection predicates.
+// The program must be compiled with the Witness option; otherwise the
+// returned witness slice is empty.
+func RunWithWitness(program *vm.Program, env interface{}) (interface{}, []*vm.Witness, error) {
+	return vm.RunWithWitness(program, env)
 }
 
 // Eval parses, compiles and runs given input.

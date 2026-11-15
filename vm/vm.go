@@ -27,6 +27,23 @@ func Run(program *Program, env interface{}) (interface{}, error) {
 	return vm.Run(program, env)
 }
 
+// RunWithWitness evaluates the bytecode program and, in addition to the
+// evaluation result, returns the witnesses captured while executing the
+// all/any collection predicates. The program must be compiled with the
+// witness option enabled, otherwise no witnesses are recorded.
+//
+// Like Run, witnesses reflect only the predicates that were really
+// evaluated; nothing is recomputed to explain a result.
+func RunWithWitness(program *Program, env interface{}) (interface{}, []*Witness, error) {
+	if program == nil {
+		return nil, nil, fmt.Errorf("program is nil")
+	}
+
+	vm := VM{}
+	out, err := vm.Run(program, env)
+	return out, vm.Witnesses(), err
+}
+
 type VM struct {
 	stack        []interface{}
 	ip           int
@@ -36,6 +53,8 @@ type VM struct {
 	curr         chan int
 	memory       int
 	memoryBudget int
+	witnessStack []*witnessFrame
+	witnesses    []*Witness
 }
 
 type Scope struct {
@@ -77,6 +96,11 @@ func (vm *VM) Run(program *Program, env interface{}) (_ interface{}, err error) 
 	if vm.scopes != nil {
 		vm.scopes = vm.scopes[0:0]
 	}
+
+	if vm.witnessStack != nil {
+		vm.witnessStack = vm.witnessStack[0:0]
+	}
+	vm.witnesses = nil
 
 	vm.memoryBudget = MemoryBudget
 	vm.memory = 0
@@ -453,6 +477,37 @@ func (vm *VM) Run(program *Program, env interface{}) (_ interface{}, err error) 
 				Len:   array.Len(),
 			})
 
+		case OpWitnessPush:
+			info := program.Constants[arg].(*WitnessInfo)
+			vm.witnessStack = append(vm.witnessStack, &witnessFrame{
+				name:  info.Name,
+				loc:   info.Loc,
+				index: -1,
+			})
+
+		case OpWitnessPop:
+			// The loop exhausted every element without finding one that
+			// decided the result, so the frame has no element.
+			vm.finalizeWitness()
+
+		case OpWitnessJumpIfFalse:
+			// all: the first element whose predicate is false decides
+			// the result and breaks the loop.
+			if !vm.current().(bool) {
+				vm.markWitness()
+				vm.finalizeWitness()
+				vm.ip += arg
+			}
+
+		case OpWitnessJumpIfTrue:
+			// any: the first element whose predicate is true decides
+			// the result and breaks the loop.
+			if vm.current().(bool) {
+				vm.markWitness()
+				vm.finalizeWitness()
+				vm.ip += arg
+			}
+
 		case OpEnd:
 			vm.scopes = vm.scopes[:len(vm.scopes)-1]
 
@@ -518,6 +573,38 @@ func (vm *VM) Scope() *Scope {
 		return vm.scopes[len(vm.scopes)-1]
 	}
 	return nil
+}
+
+func (vm *VM) popWitness() *witnessFrame {
+	frame := vm.witnessStack[len(vm.witnessStack)-1]
+	vm.witnessStack = vm.witnessStack[:len(vm.witnessStack)-1]
+	return frame
+}
+
+// markWitness records the current loop element as the one deciding the
+// all/any result. It records an element that was really evaluated.
+func (vm *VM) markWitness() {
+	frame := vm.witnessStack[len(vm.witnessStack)-1]
+	scope := vm.Scope()
+	frame.hasElement = true
+	frame.index = scope.It
+}
+
+// finalizeWitness converts the current frame into a witness and either
+// hands it to the enclosing all/any frame as its nested decision chain
+// or appends it to the run's witnesses.
+func (vm *VM) finalizeWitness() {
+	w := vm.popWitness().toWitness()
+	if len(vm.witnessStack) > 0 {
+		vm.witnessStack[len(vm.witnessStack)-1].inner = w
+	} else {
+		vm.witnesses = append(vm.witnesses, w)
+	}
+}
+
+// Witnesses returns the witnesses captured during the last run.
+func (vm *VM) Witnesses() []*Witness {
+	return vm.witnesses
 }
 
 func (vm *VM) Step() {

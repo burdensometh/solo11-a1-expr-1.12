@@ -21,6 +21,12 @@ type Config struct {
 	ConstFns    map[string]reflect.Value
 	Visitors    []ast.Visitor
 	Functions   map[string]*builtin.Function
+
+	// Witness enables witness recording for all/any collection
+	// predicates. When true the compiler emits instructions which
+	// capture the element deciding each predicate's result during the
+	// real execution. It has no effect on the evaluated result.
+	Witness bool
 }
 
 // CreateNew creates new config with default values.
