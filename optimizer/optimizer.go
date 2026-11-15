@@ -9,7 +9,7 @@ func Optimize(node *Node, config *conf.Config) error {
 	Walk(node, &inArray{})
 	for limit := 1000; limit >= 0; limit-- {
 		fold := &fold{}
-		Walk(node, fold)
+		walk(node, fold)
 		if fold.err != nil {
 			return fold.err
 		}
@@ -22,7 +22,7 @@ func Optimize(node *Node, config *conf.Config) error {
 			constExpr := &constExpr{
 				fns: config.ConstFns,
 			}
-			Walk(node, constExpr)
+			walk(node, constExpr)
 			if constExpr.err != nil {
 				return constExpr.err
 			}

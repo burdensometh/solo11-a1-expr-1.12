@@ -13,7 +13,7 @@ type fold struct {
 	err     *file.Error
 }
 
-func (fold *fold) Visit(node *Node) {
+func (fold *fold) Visit(node *Node, certain bool) {
 	patch := func(newNode Node) {
 		fold.applied = true
 		Patch(node, newNode)
@@ -177,6 +177,12 @@ func (fold *fold) Visit(node *Node) {
 			if a, ok := n.Left.(*IntegerNode); ok {
 				if b, ok := n.Right.(*IntegerNode); ok {
 					if b.Value == 0 {
+						// Leave the division to the runtime when the
+						// expression may not actually be evaluated, otherwise
+						// an unreachable branch would fail the compilation.
+						if !certain {
+							return
+						}
 						fold.err = &file.Error{
 							Location: (*node).Location(),
 							Message:  "integer divide by zero",
@@ -221,8 +227,11 @@ func (fold *fold) Visit(node *Node) {
 
 			if a != nil && a.Value { // true and x
 				patch(n.Right)
+				// Keep the source location of the effective branch.
+				(*node).SetLocation(n.Right.Location())
 			} else if b != nil && b.Value { // x and true
 				patch(n.Left)
+				(*node).SetLocation(n.Left.Location())
 			} else if (a != nil && !a.Value) || (b != nil && !b.Value) { // "x and false" or "false and x"
 				patch(&BoolNode{Value: false})
 			}
@@ -232,8 +241,11 @@ func (fold *fold) Visit(node *Node) {
 
 			if a != nil && !a.Value { // false or x
 				patch(n.Right)
+				// Keep the source location of the effective branch.
+				(*node).SetLocation(n.Right.Location())
 			} else if b != nil && !b.Value { // x or false
 				patch(n.Left)
+				(*node).SetLocation(n.Left.Location())
 			} else if (a != nil && a.Value) || (b != nil && b.Value) { // "x or true" or "true or x"
 				patch(&BoolNode{Value: true})
 			}

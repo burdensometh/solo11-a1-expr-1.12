@@ -40,6 +40,14 @@ Will be compiled into just a single number:
 23
 ```
 
+Constant folding respects the reachability of `and`, `or` and the ternary
+conditional operator. A branch which can never be executed (for example the
+right side of `false and ...`, or the not selected branch of `false ? a : b`)
+is not folded, so an error such as a division by zero in such a branch is left
+to the runtime instead of failing the compilation. When the condition cannot be
+resolved at compile time, both branches are kept and their errors are also left
+to the runtime.
+
 ## In range
 
 ```
@@ -74,5 +82,11 @@ fib(42)
 ``` 
 
 Will be replaced with the result of `fib`(42)` on the compile step.
+
+As with constant folding, a constant expression function is not called on a
+branch which is known to be unreachable, and a call on a branch which may or may
+not be executed (a conditional with a non-constant condition) is also left to
+the runtime. This keeps the number of host calls and the first reported error
+the same whether optimizations are enabled or not.
 
 [ConstExpr Example](https://pkg.go.dev/github.com/antonmedv/expr?tab=doc#ConstExpr)

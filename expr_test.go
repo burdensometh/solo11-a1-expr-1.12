@@ -2,6 +2,7 @@ package expr_test
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -1271,6 +1272,133 @@ func TestConstExpr_error_no_env(t *testing.T) {
 			expr.ConstExpr("divide"),
 		)
 	})
+}
+
+func TestExpr_unreachable_branch_is_not_optimized(t *testing.T) {
+	tests := []struct {
+		code string
+		want interface{}
+	}{
+		{`false and (1 % 0 == 0)`, false},
+		{`true or (1 % 0 == 0)`, true},
+		{`false && (1 % 0 == 0)`, false},
+		{`true || (1 % 0 == 0)`, true},
+		{`false ? 1 % 0 : 42`, 42},
+		{`true ? 42 : 1 % 0`, 42},
+	}
+	for _, tt := range tests {
+		program, err := expr.Compile(tt.code)
+		require.NoError(t, err, tt.code)
+
+		got, err := expr.Run(program, nil)
+		require.NoError(t, err, tt.code)
+		assert.Equal(t, tt.want, got, tt.code)
+	}
+}
+
+func TestExpr_uncertain_branch_error_is_left_to_runtime(t *testing.T) {
+	env := map[string]interface{}{"flag": true}
+
+	// The condition is not a constant, so the division by zero may or may not
+	// happen and must not be reported at compile time.
+	program, err := expr.Compile(`flag ? 42 : 1 % 0`, expr.Env(env))
+	require.NoError(t, err)
+
+	got, err := expr.Run(program, env)
+	require.NoError(t, err)
+	assert.Equal(t, 42, got)
+
+	env["flag"] = false
+	_, err = expr.Run(program, env)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "integer divide by zero")
+
+	// The runtime error must report the location of the modulo operation.
+	assert.Contains(t, err.Error(), "(1:15)")
+}
+
+func TestExpr_reachable_division_by_zero_fails_at_compile(t *testing.T) {
+	tests := []string{
+		`1 % 0`,
+		`true and (1 % 0 == 0)`,
+		`false or (1 % 0 == 0)`,
+		`true ? 1 % 0 : 42`,
+		`false ? 42 : 1 % 0`,
+	}
+	for _, code := range tests {
+		_, err := expr.Compile(code)
+		assert.Error(t, err, code)
+	}
+}
+
+func TestExpr_optimize_parity(t *testing.T) {
+	calls := 0
+	env := map[string]interface{}{
+		"flag": true,
+		"boom": func() (int, error) {
+			calls++
+			return 0, errors.New("boom")
+		},
+		"ok": func() int {
+			calls++
+			return 42
+		},
+	}
+	options := []expr.Option{
+		expr.Env(env),
+		expr.ConstExpr("boom"),
+		expr.ConstExpr("ok"),
+	}
+
+	tests := []struct {
+		code      string
+		want      interface{}
+		wantCalls int
+		wantErr   bool
+	}{
+		{`false and boom() == 0`, false, 0, false},
+		{`true or boom() == 0`, true, 0, false},
+		{`false ? boom() : ok()`, 42, 1, false},
+		{`true ? ok() : boom()`, 42, 1, false},
+		{`flag ? ok() : boom()`, 42, 1, false},
+		{`ok() + 1`, 43, 1, false},
+		{`flag ? boom() : 1`, nil, 1, true},
+		{`flag ? 1 : boom()`, 1, 0, false},
+	}
+	for _, tt := range tests {
+		// Both the optimized and the not optimized program must produce the
+		// same value, the same first error and the same number of host
+		// function calls.
+		var results [2]struct {
+			out   interface{}
+			err   string
+			calls int
+		}
+		for i, optimize := range []bool{true, false} {
+			opts := append([]expr.Option{}, options...)
+			if !optimize {
+				opts = append(opts, expr.Optimize(false))
+			}
+
+			calls = 0
+			program, err := expr.Compile(tt.code, opts...)
+			require.NoError(t, err, tt.code)
+
+			out, err := expr.Run(program, env)
+			if err != nil {
+				results[i].err = err.Error()
+			}
+			results[i].out = out
+			results[i].calls = calls
+		}
+
+		assert.Equal(t, results[1].out, results[0].out, "value: "+tt.code)
+		assert.Equal(t, results[1].err, results[0].err, "error: "+tt.code)
+		assert.Equal(t, results[1].calls, results[0].calls, "host calls: "+tt.code)
+		assert.Equal(t, tt.want, results[0].out, tt.code)
+		assert.Equal(t, tt.wantCalls, results[0].calls, tt.code)
+		assert.Equal(t, tt.wantErr, results[0].err != "", tt.code)
+	}
 }
 
 var stringer = reflect.TypeOf((*fmt.Stringer)(nil)).Elem()

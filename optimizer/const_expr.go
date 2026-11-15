@@ -17,7 +17,7 @@ type constExpr struct {
 	fns     map[string]reflect.Value
 }
 
-func (c *constExpr) Visit(node *Node) {
+func (c *constExpr) Visit(node *Node, certain bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			msg := fmt.Sprintf("%v", r)
@@ -36,6 +36,13 @@ func (c *constExpr) Visit(node *Node) {
 	}
 
 	if call, ok := (*node).(*CallNode); ok {
+		// A call on an uncertain execution path (for example a branch of a
+		// conditional with a non-constant condition) may not happen at all.
+		// Do not evaluate it at compile time, otherwise its error or its side
+		// effects would be observed even when the branch is never taken.
+		if !certain {
+			return
+		}
 		if name, ok := call.Callee.(*IdentifierNode); ok {
 			fn, ok := c.fns[name.Value]
 			if ok {
